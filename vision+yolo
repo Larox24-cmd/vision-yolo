@@ -1,0 +1,141 @@
+import cv2
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, Toplevel
+from PIL import Image, ImageTk
+import torch
+
+# Load YOLOv5 model
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)  # Use YOLOv5s model
+
+# Known parameters for distance calculation
+KNOWN_DISTANCE = 50.0  # cm
+KNOWN_WIDTH = 15.0  # cm
+
+# Set focal lengths directly for laptop and iPhone cameras
+FOCAL_LENGTH_LAPTOP = 600  # Example focal length for laptop (adjust as needed)
+FOCAL_LENGTH_IPHONE = 700  # Example focal length for iPhone (adjust as needed)
+
+# Function to calculate distance based on pixel width
+def calculate_distance(pixel_width, focal_length):
+    if pixel_width == 0:
+        return float('inf')
+    return (KNOWN_WIDTH * focal_length) / pixel_width
+
+# Tkinter GUI setup
+root = tk.Tk()
+root.title("Select Camera")
+root.geometry("400x200")
+
+# Variables to manage camera usage and focal length
+cap = None
+running = False
+current_focal_length = None
+iphone_mode = False
+
+# Function to initialize the detection interface
+def start_detection_interface():
+    # Clear the home screen and switch to detection interface
+    for widget in root.winfo_children():
+        widget.destroy()
+
+    root.title("Object Detection with YOLOv5")
+    root.geometry("1000x700")
+
+    # Display and button frame for camera feed
+    display_frame = tk.Frame(root)
+    display_frame.pack(pady=20)
+    global display_label
+    display_label = tk.Label(display_frame)
+    display_label.pack()
+
+    # Description box for detected objects and distances
+    global description_text
+    description_text = scrolledtext.ScrolledText(root, width=70, height=10, font=("Arial", 12))
+    description_text.pack(pady=20)
+
+    # End Button to close the program
+    end_button = tk.Button(root, text="End", command=root.quit)
+    end_button.pack(side="right", padx=10)
+
+    # Start the detection process
+    update_frame()
+
+# Update frame in Tkinter GUI
+def update_frame():
+    global cap, running
+
+    ret, frame = cap.read()
+    if ret:
+        # Resize frame for iPhone
+        frame = cv2.resize(frame, (320, 240) if iphone_mode else (640, 480))
+
+        if iphone_mode and frame.shape[0] > frame.shape[1]:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+
+        # Perform YOLOv5 inference
+        results = model(frame)
+        predictions = results.pred[0]  # Access prediction results
+
+        # Clear the description box
+        description_text.delete(1.0, tk.END)
+
+        # Loop over each detected object
+        for *box, confidence, class_id in predictions:
+            class_name = results.names[int(class_id)]
+            x1, y1, x2, y2 = map(int, box)
+            width = x2 - x1
+            height = y2 - y1
+
+            # Calculate distance for each detected object
+            distance = calculate_distance(width, current_focal_length)
+
+            # Display object name on the camera feed
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            # Add object name and distance to the description box
+            description_text.insert(tk.END, f"{class_name} - Distance: {distance:.2f} cm\n")
+
+        # Convert frame to ImageTk format and update display label
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame_rgb)
+        imgtk = ImageTk.PhotoImage(image=img)
+        display_label.imgtk = imgtk
+        display_label.config(image=imgtk)
+
+    # Schedule the next frame update
+    display_label.after(10, update_frame)
+
+# Open camera function
+def open_camera(camera_source, focal_length, is_iphone=False):
+    global cap, running, current_focal_length, iphone_mode
+    if running:
+        return
+
+    iphone_mode = is_iphone
+    current_focal_length = focal_length
+    cap = cv2.VideoCapture(camera_source)
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Cannot open camera.")
+        return
+
+    running = True
+    start_detection_interface()
+
+# Home screen button functions
+def open_laptop_camera():
+    open_camera(0, FOCAL_LENGTH_LAPTOP, is_iphone=False)
+
+def open_iphone_camera():
+    open_camera("http://192.168.0.50:4747/video", FOCAL_LENGTH_IPHONE, is_iphone=True)
+
+# Home screen buttons
+laptop_button = tk.Button(root, text="Laptop Camera", command=open_laptop_camera, font=("Arial", 14))
+laptop_button.pack(pady=20)
+
+iphone_button = tk.Button(root, text="iPhone Camera", command=open_iphone_camera, font=("Arial", 14))
+iphone_button.pack(pady=20)
+
+# Tkinter main loop
+root.protocol("WM_DELETE_WINDOW", root.quit)
+root.mainloop()
